@@ -41,15 +41,15 @@ export function activate(context: ExtensionContext) {
 	}
 
 	// The server is implemented in node
-	let serverModule = context.asAbsolutePath(path.join('server', 'server.js'));
+	let module = context.asAbsolutePath(path.join('node_modules', 'intelephense', 'lib', 'server.js'));
 	// The debug options for the server
 	let debugOptions = { execArgv: ["--nolazy", "--debug=6039"] };
 
 	// If the extension is launched in debug mode then the debug server options are used
 	// Otherwise the run options are used
 	let serverOptions: ServerOptions = {
-		run: { module: serverModule, transport: TransportKind.ipc },
-		debug: { module: serverModule, transport: TransportKind.ipc, options: debugOptions }
+		run: { module: module, runtime: "node", transport: TransportKind.ipc },
+		debug: { module: module, runtime: "node", transport: TransportKind.ipc, options: debugOptions }
 	}
 
 	let middleware = initializeEmbeddedContentDocuments(() => {
