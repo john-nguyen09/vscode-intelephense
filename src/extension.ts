@@ -17,8 +17,6 @@ import {
 	TransportKind, TextDocumentItem, DocumentFormattingRequest,
 	DocumentRangeFormattingRequest
 } from 'vscode-languageclient';
-import { WorkspaceDiscovery } from './workspaceDiscovery';
-import {initializeEmbeddedContentDocuments} from './embeddedContentDocuments';
 
 const phpLanguageId = 'php';
 const version = '0.8.5';
@@ -52,10 +50,6 @@ export function activate(context: ExtensionContext) {
 		debug: { module: module, runtime: "node", transport: TransportKind.ipc, options: debugOptions }
 	}
 
-	let middleware = initializeEmbeddedContentDocuments(() => {
-		return languageClient;
-	});
-
 	// Options to control the language client
 	let clientOptions: LanguageClientOptions = {
 		documentSelector: [
@@ -64,20 +58,12 @@ export function activate(context: ExtensionContext) {
 		synchronize: {
 			// Synchronize the setting section 'intelephense' to the server
 			configurationSection: 'intelephense',
-			// Notify the server about file changes to php in the workspace
-			//fileEvents: workspace.createFileSystemWatcher('**/*.php')
 		},
 		initializationOptions: {
 			storagePath:context.storagePath,
 			clearCache:clearCache
-		},
-		middleware:middleware.middleware
+		}
 	}
-
-	let fsWatcher = workspace.createFileSystemWatcher(workspaceFilesIncludeGlob());
-	fsWatcher.onDidDelete(onDidDelete);
-	fsWatcher.onDidCreate(onDidCreate);
-	fsWatcher.onDidChange(onDidChange);
 
 	// Create the language client and start the client.
 	languageClient = new LanguageClient('intelephense', 'intelephense', serverOptions, clientOptions);
@@ -88,57 +74,9 @@ export function activate(context: ExtensionContext) {
 		languageClient.info('Intelephense ' + version);
 	});
 
-	WorkspaceDiscovery.client = languageClient;
-	WorkspaceDiscovery.maxFileSizeBytes = workspace.getConfiguration("intelephense.file").get('maxSize') as number;
-
-	if (workspace.workspaceFolders && workspace.workspaceFolders.length > 0) {
-		let token:CancellationToken;
-		ready.then(()=>{
-			if(cancelWorkspaceDiscoveryController) {
-				cancelWorkspaceDiscoveryController.dispose();
-			}
-			cancelWorkspaceDiscoveryController = new CancellationTokenSource();
-			token = cancelWorkspaceDiscoveryController.token;
-			return workspace.findFiles(workspaceFilesIncludeGlob(), undefined, undefined, token);
-		}).then((uriArray) => {
-			indexWorkspace(uriArray, true, token);
-		});
-	}
-
-	let onDidChangeWorkspaceFoldersDisposable = workspace.onDidChangeWorkspaceFolders((e)=>{
-		//handle folder add/remove
-		if(cancelWorkspaceDiscoveryController) {
-			cancelWorkspaceDiscoveryController.dispose();
-		}
-		cancelWorkspaceDiscoveryController = new CancellationTokenSource();
-		let token = cancelWorkspaceDiscoveryController.token;
-		return workspace.findFiles(workspaceFilesIncludeGlob()).then((uriArray) => {
-			indexWorkspace(uriArray, false, token);
-		});
-	});
-
-	let importCommandDisposable = commands.registerTextEditorCommand('intelephense.import', importCommandHandler);
-	let clearCacheDisposable = commands.registerCommand('intelephense.clear.cache', clearCacheCommandHandler);
-	let cancelIndexingDisposable = commands.registerCommand('intelephense.cancel.indexing', cancelWorkspaceDiscoveryHandler);
-
 	//push disposables
-	context.subscriptions.push(langClientDisposable, fsWatcher, importCommandDisposable, clearCacheDisposable, 
-		onDidChangeWorkspaceFoldersDisposable, cancelIndexingDisposable, middleware);
+	context.subscriptions.push(langClientDisposable);
 
-	let wordPatternParts = [
-		/([$a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff\\]*)/.source,
-		/([^\$\-\`\~\!\@\#\%\^\&\*\(\)\=\+\[\{\]\}\\\|\;\:\'\"\,\.\<\>\/\?\s]+)/.source
-	];
-
-	languages.setLanguageConfiguration(phpLanguageId, {
-		wordPattern: new RegExp(wordPatternParts.join('|'), 'g'),
-	});
-
-}
-
-interface ImportSymbolTextEdits {
-	edits: TextEdit[],
-	aliasRequired: boolean
 }
 
 function importCommandHandler(textEditor: TextEditor, edit: TextEditorEdit) {
@@ -164,74 +102,4 @@ function clearCacheCommandHandler() {
 	return extensionContext.workspaceState.update('clearCache', true).then(()=>{
 		commands.executeCommand('workbench.action.reloadWindow');
 	});
-}
-
-function cancelWorkspaceDiscoveryHandler() {
-	if(cancelWorkspaceDiscoveryController) {
-		cancelWorkspaceDiscoveryController.dispose();
-		cancelWorkspaceDiscoveryController = undefined;
-	}
-}
-
-function workspaceFilesIncludeGlob() {
-	let settings = workspace.getConfiguration('files').get('associations');
-	let associations = Object.keys(settings).filter((x) => {
-		return settings[x] === phpLanguageId;
-	});
-
-	associations.push('*.php');
-	associations = associations.map((v, i, a) => {
-		if(v.indexOf('/') < 0 && v.indexOf('\\') < 0) {
-			return '**/' + v;
-		} else {
-			return v;
-		}
-	});
-	
-	return '{' + Array.from(new Set<string>(associations)).join(',') + '}';
-}
-
-function onDidDelete(uri: Uri) {
-	WorkspaceDiscovery.forget(uri);
-}
-
-function onDidChange(uri: Uri) {
-	WorkspaceDiscovery.delayedDiscover(uri);
-}
-
-function onDidCreate(uri: Uri) {
-	onDidChange(uri);
-}
-
-function indexWorkspace(uriArray: Uri[], checkModTime:boolean, token:CancellationToken) {
-
-	if(token.isCancellationRequested) {
-		return;
-	}
-
-	let indexingStartHrtime = process.hrtime();
-	languageClient.info('Indexing started.');
-	let completedPromise = WorkspaceDiscovery.checkCacheThenDiscover(uriArray, checkModTime, token).then((count)=>{
-		indexingCompleteFeedback(indexingStartHrtime, count, token);
-	});
-	window.setStatusBarMessage('$(search) intelephense indexing ...', completedPromise);
-
-}
-
-function indexingCompleteFeedback(startHrtime: [number, number], fileCount: number, token:CancellationToken) {
-	let elapsed = process.hrtime(startHrtime);
-	let info = [
-		`${fileCount} files`,
-		`${elapsed[0]}.${Math.round(elapsed[1] / 1000000)} s`
-	];
-
-	languageClient.info(
-		[token.isCancellationRequested ? 'Indexing cancelled' : 'Indexing ended', ...info].join(' | ')
-	);
-
-	window.setStatusBarMessage([
-		'$(search) intelephense indexing ' + (token.isCancellationRequested ? 'cancelled' : 'complete'),
-		`$(file-code) ${fileCount}`,
-		`$(clock) ${elapsed[0]}.${Math.round(elapsed[1] / 100000000)}`
-	].join('   '), 30000);
 }
