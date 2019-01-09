@@ -17,6 +17,7 @@ import {
 	TransportKind, TextDocumentItem, DocumentFormattingRequest,
 	DocumentRangeFormattingRequest
 } from 'vscode-languageclient';
+import {initializeEmbeddedContentDocuments} from './embeddedContentDocuments';
 
 const phpLanguageId = 'php';
 const version = '0.8.5';
@@ -50,6 +51,10 @@ export function activate(context: ExtensionContext) {
 		debug: { module: module, runtime: "node", transport: TransportKind.ipc, options: debugOptions }
 	}
 
+	let middleware = initializeEmbeddedContentDocuments(() => {
+		return languageClient;
+	});
+
 	// Options to control the language client
 	let clientOptions: LanguageClientOptions = {
 		documentSelector: [
@@ -62,7 +67,8 @@ export function activate(context: ExtensionContext) {
 		initializationOptions: {
 			storagePath:context.storagePath,
 			clearCache:clearCache
-		}
+		},
+		middleware:middleware.middleware
 	}
 
 	// Create the language client and start the client.
